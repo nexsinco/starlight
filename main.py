@@ -13,6 +13,7 @@ import os
 import random
 import platform
 import socket
+import shutil
 from memory import MemoryManager
 from learn import KnowledgeEngine
 from brain import DecisionBrain
@@ -48,7 +49,7 @@ class StellightEngine:
         self.session_learn_count = 0
         self.total_interactions = 0
         self.confidence_scores = []
-        self.term_width = os.get_terminal_size().columns if hasattr(os, 'get_terminal_size') else 80
+        self.term_width = shutil.get_terminal_size((80, 24)).columns
 
     def clear_screen(self):
         os.system('cls' if os.name == 'nt' else 'clear')
@@ -59,16 +60,13 @@ class StellightEngine:
         print(f"{' ' * padding}{style}{color}{text}{Color.RESET}")
 
     def get_system_info(self):
-        """Gather real system data. Returns a list of lines for the panel."""
+        """Gather client/session data for the compact boot panel."""
         def safe(func, default="[REDACTED]"):
-            try: return func()
-            except: return default
+            try:
+                return func()
+            except Exception:
+                return default
 
-        user = self.user
-        host = safe(lambda: socket.gethostname(), "localhost")
-        os_name = f"{platform.system()} {platform.release()}" if platform.system() else "Unknown"
-        kernel = platform.version() or "[REDACTED]"
-        cpu = platform.processor() or "[REDACTED]"
         mem = "[REDACTED]"
         if os.path.exists('/proc/meminfo'):
             try:
@@ -78,87 +76,93 @@ class StellightEngine:
                             mem_kb = int(line.split()[1])
                             mem = f"{mem_kb / 1024 / 1024:.1f} GiB"
                             break
-            except:
+            except OSError:
                 pass
-        python_ver = platform.python_version()
-        session_id = hex(hash(user + str(self.start_time)))[2:10] if hasattr(self,'start_time') else hex(hash(user))[2:10]
-        started = time.strftime('%Y-%m-%d %H:%M:%S') if hasattr(self,'start_time') else "just now"
 
-        info = [
-            f"  User: {user}",
-            f"  Hostname: {host}",
-            f"  OS: {os_name}",
-            f"  Kernel: {kernel}",
-            f"  CPU: {cpu}",
-            f"  RAM: {mem}",
-            f"  Python: {python_ver}",
-            f"  Session ID: 0x{session_id}",
-            f"  Started: {started}"
+        started = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.start_time))
+        session_id = hex(abs(hash(self.user + str(self.start_time))))[2:10]
+        knowledge_count = len(getattr(self.knowledge, 'questions', []))
+        history_count = len(self.memory.storage.get('history', []))
+        columns = shutil.get_terminal_size((80, 24)).columns
+
+        return [
+            ("Client", self.user),
+            ("Host", safe(lambda: socket.gethostname(), "localhost")),
+            ("OS", f"{platform.system()} {platform.release()}"),
+            ("Kernel", platform.version() or "[REDACTED]"),
+            ("Machine", platform.machine() or "[REDACTED]"),
+            ("CPU", platform.processor() or "[REDACTED]"),
+            ("RAM", mem),
+            ("Python", platform.python_version()),
+            ("Terminal", f"{columns} columns"),
+            ("Knowledge", f"{knowledge_count} learned prompts"),
+            ("Memory", f"{history_count} saved turns"),
+            ("Session", f"0x{session_id}"),
+            ("Started", started),
         ]
-        return info
+
+    def _loading_splash(self):
+        frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        deadline = time.time() + random.uniform(2.0, 4.0)
+        i = 0
+        while time.time() < deadline:
+            dots = "." * ((i % 3) + 1)
+            self.clear_screen()
+            print(f"\n{Color.CYAN}{Color.BOLD}")
+            self.print_centered("Starlight loading" + dots, Color.CYAN, Color.BOLD)
+            self.print_centered(frames[i % len(frames)], Color.MAGENTA, Color.BOLD)
+            print(Color.RESET)
+            time.sleep(0.16)
+            i += 1
+
+    def _print_client_panel(self):
+        info = self.get_system_info()
+        label_width = max(len(label) for label, _ in info)
+        value_width = min(max(len(str(value)) for _, value in info), max(32, self.term_width - label_width - 10))
+        box_width = label_width + value_width + 7
+        horizontal = '═' * (box_width - 2)
+
+        self.print_centered(f"╔{horizontal}╗", Color.MAGENTA, Color.BOLD)
+        title = "CLIENT INFORMATION"
+        self.print_centered(f"║{title:^{box_width - 2}}║", Color.MAGENTA, Color.BOLD)
+        self.print_centered(f"╠{horizontal}╣", Color.MAGENTA, Color.BOLD)
+        for label, value in info:
+            text = str(value)
+            if len(text) > value_width:
+                text = text[:value_width - 1] + "…"
+            row = f"║ {label:<{label_width}} │ {text:<{value_width}} ║"
+            self.print_centered(row, Color.MAGENTA)
+        self.print_centered(f"╚{horizontal}╝", Color.MAGENTA, Color.BOLD)
 
     def boot_sequence(self):
-        self.clear_screen()
-
-        # Header
-        print(f"\n{Color.CYAN}{Color.BOLD}")
-        self.print_centered("╔══════════════════════════════════════════════════════════╗", Color.CYAN, Color.BOLD)
-        self.print_centered("║           STELLIGHT AI PROTOTYPE v0.1                   ║", Color.CYAN, Color.BOLD)
-        self.print_centered("║      Advanced Neural Language Processing Engine          ║", Color.CYAN, Color.BOLD)
-        self.print_centered("╚══════════════════════════════════════════════════════════╝", Color.CYAN, Color.BOLD)
-        print(f"{Color.RESET}\n")
-        time.sleep(0.4)
-
-        print(f"{Color.DIM}{'─' * self.term_width}{Color.RESET}")
-        print(f"{Color.BOLD}{Color.WHITE}  SYSTEM INITIALIZATION{Color.RESET}")
-        print(f"{Color.DIM}{'─' * self.term_width}{Color.RESET}\n")
+        self._loading_splash()
 
         boot_tasks = [
-            ("Neural Core Initialization", "CPU: 3.2GHz | RAM: 16GB"),
-            ("Memory Subsystem Loading", "Vectors: 1.2M | Clusters: 847"),
-            ("NLP Pipeline Activation", "Tokenizer: BPE | Embeddings: 768d"),
-            ("Semantic Analysis Matrix", "Accuracy: 94.7% | Recall: 91.2%"),
-            ("Lexical Normalization Filters", "Languages: EN, ES, FR, DE"),
-            ("Mathematical Logic Coprocessor", "Precision: FP32 | Throughput: 1.2T OPS"),
-            ("Knowledge Graph Integration", "Nodes: 45K | Edges: 128K"),
-            ("Session Handshake Protocol", "TLS 1.3 | Latency: 12ms"),
+            ("Neural Core", "ready"),
+            ("Memory", "synced"),
+            ("NLP", "online"),
+            ("Math Engine", "optimized"),
+            ("Knowledge", "indexed"),
         ]
 
-        bar_width = 30
-        for i, (task, specs) in enumerate(boot_tasks):
-            # Draw empty bar
-            sys.stdout.write(f"  {Color.CYAN}[{Color.DIM}{'░'*bar_width}{Color.CYAN}] {Color.WHITE}{task:.<40} ")
-            sys.stdout.flush()
-
-            # Animate bar filling
-            for filled in range(1, bar_width + 1):
-                time.sleep(0.02)  # speed of fill
-                bar = f"{Color.GREEN}{'█'*filled}{Color.DIM}{'░'*(bar_width-filled)}{Color.RESET}"
-                sys.stdout.write(f"\r  {Color.CYAN}[{bar}] {Color.WHITE}{task:.<40} {Color.YELLOW}⣿{Color.RESET}")
+        bar_width = min(34, max(20, self.term_width - 42))
+        for task, status in boot_tasks:
+            for filled in range(bar_width + 1):
+                bar = f"{Color.GREEN}{'█' * filled}{Color.DIM}{'░' * (bar_width - filled)}{Color.RESET}"
+                sys.stdout.write(
+                    f"\r  {Color.CYAN}[{bar}{Color.CYAN}] {Color.WHITE}{task:<14} {Color.YELLOW}{status:<10}{Color.RESET}"
+                )
                 sys.stdout.flush()
+                time.sleep(0.012)
+            time.sleep(0.08)
+        time.sleep(0.25)
 
-            # Completed bar
-            bar_full = f"{Color.GREEN}{'█'*bar_width}{Color.RESET}"
-            sys.stdout.write(f"\r  {Color.CYAN}[{bar_full}] {Color.WHITE}{task:.<40} {Color.GREEN}{Color.BOLD}✓ ONLINE{Color.RESET}")
-            print(f"\n  {Color.DIM}     └─ {specs}{Color.RESET}\n")
-            time.sleep(0.1)
-
-        # Separator and system info panel
-        print(f"\n{Color.DIM}{'─' * self.term_width}{Color.RESET}")
-
-        info = self.get_system_info()
-        max_len = max(len(line) for line in info)
-        box_width = max_len + 4
-        horizontal = '─' * (box_width - 2)
-
-        print(f"  {Color.MAGENTA}┌{horizontal}┐{Color.RESET}")
-        for line in info:
-            print(f"  {Color.MAGENTA}│{Color.RESET} {line}{' ' * (max_len - len(line))} {Color.MAGENTA}│{Color.RESET}")
-        print(f"  {Color.MAGENTA}└{horizontal}┘{Color.RESET}")
-
+        # Clear the splash/progress UI so bars do not stack on screen.
+        self.clear_screen()
+        print()
+        self._print_client_panel()
         print(f"\n{Color.CYAN}{Color.BOLD}  ✦ Welcome back, {self.user}{Color.RESET}")
-        print(f"  {Color.DIM}All systems nominal. Ready for input.{Color.RESET}")
-        print(f"\n{Color.DIM}{'─' * self.term_width}{Color.RESET}\n")
+        print(f"  {Color.DIM}Ready for chat, learning, and math. Type /help for commands.{Color.RESET}\n")
 
     def handle_system_commands(self, text):
         lower_text = text.lower()
@@ -236,30 +240,11 @@ class StellightEngine:
         answer, conf = self.brain.process_pipeline(self.user, user_input)
         self.confidence_scores.append(conf)
 
-        if answer is not None and conf >= self.brain.HIGH_CONF:
+        if answer is not None:
             return answer
 
-        if answer is not None and conf >= self.brain.LOW_CONF:
-            print(f"{Color.CYAN}{Color.BOLD}  Bot:{Color.RESET} {answer}")
-            print(f"{Color.YELLOW}  (Confidence: {conf:.0%}){Color.RESET}")
-            verify = input(f"{Color.BOLD}  Was that right? (yes/no): {Color.RESET}").lower().strip()
-            if verify in ['yes','y']:
-                self.knowledge.learn(user_input, answer)
-                return answer
-            else:
-                correction = input(f"{Color.BOLD}  What should I say instead? {Color.RESET}").strip()
-                if correction:
-                    self.knowledge.learn(user_input, correction)
-                    self.session_learn_count += 1
-                    return correction
-                return None
-
         print(f"{Color.YELLOW}  ⚠ I don't know that yet.{Color.RESET}")
-        teach = input(f"{Color.BOLD}  Teach me: {Color.RESET}").strip()
-        if teach:
-            self.knowledge.learn(user_input, teach)
-            self.session_learn_count += 1
-            return teach
+        print(f"  {Color.DIM}Tip: teach me instantly with: learn {user_input} | [best answer]{Color.RESET}")
         return None
 
     def run(self):

@@ -69,8 +69,11 @@ class KnowledgeEngine:
         """Load old knowledge.json and convert it to vector store."""
         if not os.path.exists(FILE):
             return
-        with open(FILE, "r") as f:
-            raw = json.load(f)
+        try:
+            with open(FILE, "r") as f:
+                raw = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            raw = {}
         for q_text, data in raw.items():
             answer = data.get("answer") if isinstance(data, dict) else data
             self.learn(q_text, answer, save_to_file=False)
@@ -93,8 +96,11 @@ class KnowledgeEngine:
     def _save_to_json(self, q, a):
         data = {}
         if os.path.exists(FILE):
-            with open(FILE, "r") as f:
-                data = json.load(f)
+            try:
+                with open(FILE, "r") as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                data = {}
         data[q] = {"answer": a}
         with open(FILE, "w") as f:
             json.dump(data, f, indent=4)

@@ -16,7 +16,7 @@ class MemoryManager:
         try:
             with open(FILE, "r") as f:
                 return json.load(f)
-        except Exception:
+        except (json.JSONDecodeError, OSError):
             return default_structure
 
     def save_all(self):
