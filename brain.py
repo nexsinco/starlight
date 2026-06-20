@@ -529,9 +529,26 @@ class AdvancedMathEngine:
             root = int(root)
         return "%s = %s" % (var, root)
 
+    @staticmethod
+    def _normalize_math_language(text: str) -> str:
+        replacements = [
+            (r"\bwhats\b", "what is"),
+            (r"\bplus\b", "+"),
+            (r"\bminus\b", "-"),
+            (r"\btimes\b|\bmultiplied by\b", "*"),
+            (r"\bdivided by\b|\bover\b", "/"),
+            (r"\bto the power of\b|\bto the power\b|\bpower of\b", "^"),
+            (r"\bsquared\b", "^2"),
+            (r"\bcubed\b", "^3"),
+        ]
+        normalized = text
+        for pattern, replacement in replacements:
+            normalized = re.sub(pattern, replacement, normalized, flags=re.I)
+        return normalized
+
     @classmethod
     def process(cls, text: str):
-        t = text.lower().strip()
+        t = cls._normalize_math_language(text.lower().strip())
         t = re.sub(
             r'^(calculate|compute|what is|what\'s|find|solve|evaluate|'
             r'value of|work out|figure out)\s+', '', t, flags=re.I
@@ -668,11 +685,11 @@ class AdvancedMathEngine:
 class SentenceGenerator:
 
     FALLBACKS = [
-        "That's an interesting question — I'm still learning about that. Could you teach me?",
-        "I don't have a confident answer yet, but I'd love to learn. What's the right response?",
-        "Hmm, I'm not sure about that one. What should I say?",
-        "My knowledge on that is fuzzy. Help me improve — what's the correct answer?",
-        "I'm drawing a blank on that. Want to teach me?",
+        "I can chat about that, but I need a little more detail. What angle do you want to explore?",
+        "I’m not fully sure yet, but I can help reason it out. Tell me one more detail and I’ll try a smarter answer.",
+        "Got it. I can keep learning from this conversation — ask it another way or teach me with: learn question | answer.",
+        "I’m still building knowledge there, but I can help brainstorm, simplify, or make a plan.",
+        "Interesting — give me a bit more context and I’ll connect it to what I already know.",
     ]
 
     GREETING_RESPONSES = [
@@ -756,17 +773,21 @@ class IntentClassifier:
         'recall':      r"(what is|what's) my\s+\w+",
         'remember':    r'^remember my\s+.+\s+is\s+.+',
         'question':    r'\?$|^(what|who|where|when|why|how|which|whose|whom)',
-        'small_talk':  r'^(how are you|how\'s it going|what\'s up|are you|do you|can you)',
+        'small_talk':  r'^(how are you|how\'s it going|what\'s up|are you|do you|can you|i\'m doing|i am doing|doing fine|doing good|doing well)',
     }
 
     COMPILED = {intent: re.compile(pat, re.IGNORECASE)
                 for intent, pat in PATTERNS.items()}
 
     SMALL_TALK_RESPONSES = {
-        r"how are you|how's it going": [
+        r"how are you|how's it going|how are you doing": [
             "I'm doing great, thanks for asking! What can I help you with?",
             "Running at peak performance! What's on your mind?",
             "Fantastic! Ready to tackle anything.",
+        ],
+        r"i'?m doing|i am doing|doing fine|doing good|doing well": [
+            "Nice — glad to hear it! Want to chat, learn something, or solve a problem?",
+            "Awesome. I'm here for chatting, quick learning, or math whenever you're ready.",
         ],
         r'are you (human|a robot|an ai|real)': [
             "I'm an AI — but a pretty smart one! Ask me anything.",
@@ -784,7 +805,13 @@ class IntentClassifier:
     @classmethod
     def classify(cls, text: str) -> str:
         t = text.lower().strip()
+        # Conversational phrases like "how are you doing" should not be
+        # swallowed by the broad question detector just because they start with how.
+        if cls.COMPILED['small_talk'].search(t):
+            return 'small_talk'
         for intent, pattern in cls.COMPILED.items():
+            if intent == 'small_talk':
+                continue
             if pattern.search(t):
                 return intent
         return 'unknown'
@@ -841,12 +868,6 @@ class ContextManager:
 # ══════════════════════════════════════════════════════════════════════
 
 class DecisionBrain:
-    def __init__(self, memory, knowledge):
-        self.memory = memory
-        self.knowledge = knowledge
-        self.HIGH_CONF = 0.85
-        self.LOW_CONF = 0.50
-
     def __init__(self, memory_manager, knowledge_engine):
         self.memory    = memory_manager
         self.knowledge = knowledge_engine
@@ -969,7 +990,7 @@ class DecisionBrain:
             self.context.add_turn(msg, generated)
             return generated, 0.3
 
-        # Full fallback
+        # Full fallback: give a useful conversational answer instead of forcing teaching.
         fallback = self.generator.fallback()
         self.context.add_turn(msg, fallback)
-        return fallback, 0.0
+        return fallback, 0.55
