@@ -59,7 +59,11 @@ class AdvancedMathEngine:
         ]
         regex = '|'.join('(?P<%s>%s)' % (n, p) for n, p in spec)
         tokens = []
+        pos = 0
         for mo in re.finditer(regex, expr):
+            if mo.start() != pos:
+                raise SyntaxError("Invalid token near '%s'" % expr[pos:mo.start() + 1])
+            pos = mo.end()
             kind, val = mo.lastgroup, mo.group()
             if kind == 'SKIP':
                 continue
@@ -71,6 +75,8 @@ class AdvancedMathEngine:
                 val = AdvancedMathEngine.CONSTANTS[val]
                 kind = 'FLOAT'
             tokens.append((kind, val))
+        if pos != len(expr):
+            raise SyntaxError("Invalid token near '%s'" % expr[pos:])
         return tokens
 
     @classmethod
@@ -216,13 +222,15 @@ class AdvancedMathEngine:
 
     @classmethod
     def evaluate(cls, expr: str, variables=None) -> float:
-        variables = dict(cls.CONSTANTS)
+        scope = dict(cls.CONSTANTS)
         if variables is not None:
-            variables.update(variables)
+            scope.update(variables)
         expr = cls._implicit_mult(expr)
         tokens = cls._tokenize(expr)
+        if not tokens:
+            raise SyntaxError("Empty expression")
         ast = cls._parse(tokens)
-        return cls._eval(ast, variables or cls.CONSTANTS)
+        return cls._eval(ast, scope)
 
     @staticmethod
     def _fmt(val) -> str:
@@ -398,6 +406,76 @@ class AdvancedMathEngine:
             return value * cls.UNITS[fu] / cls.UNITS[tu]
         raise ValueError("Cannot convert %s to %s" % (from_u, to_u))
 
+
+    @staticmethod
+    def _fmt_steps(title: str, steps: list, answer: str) -> str:
+        rendered = [title, "Steps:"]
+        rendered.extend("  %d) %s" % (i + 1, step) for i, step in enumerate(steps))
+        rendered.append("Answer: %s" % answer)
+        return "\n".join(rendered)
+
+    @staticmethod
+    def _extract_numbers(text: str) -> list:
+        return [float(x) for x in re.findall(r'-?\d+(?:\.\d+)?', text)]
+
+    @classmethod
+    def _solve_linear_equation(cls, lhs: str, rhs: str, var: str):
+        try:
+            f0 = cls.evaluate('(%s)-(%s)' % (lhs, rhs), {var: 0})
+            f1 = cls.evaluate('(%s)-(%s)' % (lhs, rhs), {var: 1})
+            a = f1 - f0
+            b = f0
+            if abs(a) < 1e-12:
+                return None
+            root = -b / a
+            if abs(cls.evaluate('(%s)-(%s)' % (lhs, rhs), {var: root})) > 1e-7:
+                return None
+            steps = [
+                "Move everything to one side: f(%s) = (%s) - (%s)." % (var, lhs, rhs),
+                "Evaluate f(0) = %s and f(1) = %s, so slope a = %s." % (cls._fmt(f0), cls._fmt(f1), cls._fmt(a)),
+                "Solve a·%s + b = 0: %s = %s / %s." % (var, var, cls._fmt(-b), cls._fmt(a)),
+            ]
+            return cls._fmt_steps("Linear equation solver", steps, "%s = %s" % (var, cls._fmt(root)))
+        except Exception:
+            return None
+
+    @classmethod
+    def _solve_quadratic_coefficients(cls, eq: str, var: str):
+        match = re.match(
+            r'^\s*([+-]?\d*\.?\d*)\*?%s\^2\s*([+-]\s*\d*\.?\d*)\*?%s\s*([+-]\s*\d+\.?\d*)?\s*=\s*0\s*$' % (var, var),
+            eq.replace(' ', ''),
+            re.I,
+        )
+        if not match:
+            return None
+        def coeff(raw, default=1.0):
+            if raw in (None, ''):
+                return default
+            raw = raw.replace(' ', '')
+            if raw == '+':
+                return 1.0
+            if raw == '-':
+                return -1.0
+            return float(raw)
+        a = coeff(match.group(1), 1.0)
+        b = coeff(match.group(2), 1.0)
+        c = coeff(match.group(3), 0.0)
+        disc = b * b - 4 * a * c
+        steps = [
+            "Identify a = %s, b = %s, c = %s." % (cls._fmt(a), cls._fmt(b), cls._fmt(c)),
+            "Compute discriminant Δ = b² - 4ac = %s." % cls._fmt(disc),
+        ]
+        if disc < 0:
+            real = -b / (2 * a)
+            imag = math.sqrt(-disc) / (2 * a)
+            ans = "%s = %s ± %si" % (var, cls._fmt(real), cls._fmt(abs(imag)))
+        else:
+            r1 = (-b + math.sqrt(disc)) / (2 * a)
+            r2 = (-b - math.sqrt(disc)) / (2 * a)
+            ans = "%s = %s or %s = %s" % (var, cls._fmt(r1), var, cls._fmt(r2))
+        steps.append("Apply the quadratic formula (-b ± √Δ) / 2a.")
+        return cls._fmt_steps("Quadratic equation solver", steps, ans)
+
     @classmethod
     def solve_equation(cls, eq: str, var: str = None) -> str:
         sides = eq.split('=')
@@ -412,6 +490,12 @@ class AdvancedMathEngine:
             var = next(iter(vars_found), None)
         if not var:
             return "No variable found in equation"
+        quadratic = cls._solve_quadratic_coefficients(eq, var)
+        if quadratic:
+            return quadratic
+        linear = cls._solve_linear_equation(lhs, rhs, var)
+        if linear:
+            return linear
         f = lambda x: cls.evaluate('(%s)-(%s)' % (lhs, rhs), {var: x})
         lo, hi = -1e6, 1e6
         for _ in range(100):
@@ -452,6 +536,13 @@ class AdvancedMathEngine:
             r'^(calculate|compute|what is|what\'s|find|solve|evaluate|'
             r'value of|work out|figure out)\s+', '', t, flags=re.I
         )
+
+        # Percentages
+        m = re.search(r'(?:what\s+is\s+)?([\d.]+)\s*%\s+of\s+([\d.]+)', t)
+        if m:
+            pct, whole = float(m.group(1)), float(m.group(2))
+            result = whole * pct / 100
+            return cls._fmt_steps("Percentage solver", ["Convert %s%% to decimal: %s/100 = %s." % (cls._fmt(pct), cls._fmt(pct), cls._fmt(pct / 100)), "Multiply by the whole: %s × %s." % (cls._fmt(whole), cls._fmt(pct / 100))], cls._fmt(result)), 1.0
 
         # Fibonacci
         m = re.search(r'fibonacci(?:\s+sequence)?\s+(?:of\s+|for\s+)?(\d+)', t)
@@ -563,7 +654,7 @@ class AdvancedMathEngine:
         # Plain expression
         try:
             val = cls.evaluate(t)
-            return cls._fmt(val), 1.0
+            return cls._fmt_steps("Arithmetic evaluator", ["Parse the expression with standard precedence: parentheses, powers, multiplication/division, addition/subtraction.", "Evaluate safely without Python eval."], cls._fmt(val)), 1.0
         except Exception:
             pass
 
@@ -763,6 +854,8 @@ class DecisionBrain:
         self.generator = SentenceGenerator()
         self.intent    = IntentClassifier()
         self.context   = ContextManager()
+        self.HIGH_CONF = 0.85
+        self.LOW_CONF  = 0.50
         self._sync_generator()
 
     def _sync_generator(self):
