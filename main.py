@@ -17,6 +17,7 @@ import shutil
 from memory import MemoryManager
 from learn import KnowledgeEngine
 from brain import DecisionBrain
+from groq_provider import run_training_session
 
 class Color:
     CYAN = '\033[96m'
@@ -46,6 +47,7 @@ class StellightEngine:
         self.memory = MemoryManager()
         self.knowledge = KnowledgeEngine()
         self.brain = DecisionBrain(self.memory, self.knowledge)
+        self.provider = self.brain.provider
         self.session_learn_count = 0
         self.total_interactions = 0
         self.confidence_scores = []
@@ -134,7 +136,47 @@ class StellightEngine:
             self.print_centered(row, Color.MAGENTA)
         self.print_centered(f"╚{horizontal}╝", Color.MAGENTA, Color.BOLD)
 
+    def _menu_choice(self):
+        print(f"{Color.CYAN}{Color.BOLD}╔══ Starlight Mode ══╗{Color.RESET}")
+        print(f"  {Color.GREEN}1){Color.RESET} Train the AI")
+        print(f"  {Color.GREEN}2){Color.RESET} Chat with the AI")
+        print(f"{Color.CYAN}{Color.BOLD}╚════════════════════╝{Color.RESET}")
+        choice = input(f"\n{Color.CYAN}{Color.BOLD}  Choose 1 or 2:{Color.RESET} ").strip().lower()
+        return "train" if choice in {"1", "train", "t"} else "chat"
+
+    def _training_box(self, stats, frame=0):
+        dots = [".  ", ".. ", "..."][frame % 3]
+        width = 46
+        lines = [
+            f"Training{dots}",
+            f"Provider: {stats.get('provider', 'Local seed')}",
+            f"Information accumulated: {stats.get('learned', 0)} / {stats.get('topics', 0)}",
+            f"Errors: {stats.get('errors', 0)}",
+        ]
+        self.clear_screen()
+        self.print_centered("╔" + "═" * width + "╗", Color.MAGENTA, Color.BOLD)
+        for line in lines:
+            self.print_centered("║ " + line[:width-2].ljust(width - 2) + " ║", Color.MAGENTA)
+        self.print_centered("╚" + "═" * width + "╝", Color.MAGENTA, Color.BOLD)
+
+    def train_ai(self):
+        frame = {"i": 0}
+        def progress(stats):
+            self._training_box(stats, frame["i"])
+            frame["i"] += 1
+        initial = {"provider": "Groq" if self.provider.enabled else "Local seed", "learned": 0, "topics": 0, "errors": 0}
+        self._training_box(initial)
+        stats = run_training_session(self.knowledge, self.provider, progress_callback=progress)
+        self.brain.retrain_generator()
+        self.session_learn_count += stats.get("learned", 0)
+        self._training_box(stats, frame["i"])
+        print(f"\n{Color.GREEN}{Color.BOLD}  ✓ Training complete. Press Enter to chat.{Color.RESET}")
+        input()
+
     def boot_sequence(self):
+        mode = self._menu_choice()
+        if mode == "train":
+            self.train_ai()
         self._loading_splash()
 
         boot_tasks = [
@@ -143,6 +185,7 @@ class StellightEngine:
             ("NLP", "online"),
             ("Math Engine", "optimized"),
             ("Knowledge", "indexed"),
+            ("Groq", "enabled" if self.provider.enabled else "env-missing"),
         ]
 
         bar_width = min(34, max(20, self.term_width - 42))
@@ -174,6 +217,7 @@ class StellightEngine:
                 ("/stats", "View session statistics"),
                 ("/clear", "Clear the terminal screen"),
                 ("/status", "Display system status"),
+                ("/train", "Run the Groq/local training pass"),
                 ("exit | quit | shutdown", "End the session"),
             ]
             for cmd, desc in commands:
@@ -196,6 +240,10 @@ class StellightEngine:
             self.clear_screen()
             return True
 
+        elif lower_text == "/train":
+            self.train_ai()
+            return True
+
         elif lower_text == "/status":
             memory_usage = random.randint(45, 78)
             print(f"\n{Color.CYAN}{Color.BOLD}╔══ System Status ══╗{Color.RESET}")
@@ -203,6 +251,7 @@ class StellightEngine:
             print(f"  {Color.WHITE}Knowledge Base:{Color.RESET}  {Color.GREEN}OPTIMAL{Color.RESET}")
             print(f"  {Color.WHITE}Neural Network:{Color.RESET}  {Color.GREEN}ACTIVE{Color.RESET}")
             print(f"  {Color.WHITE}NLP Pipeline:{Color.RESET}    {Color.GREEN}OPERATIONAL{Color.RESET}")
+            print(f"  {Color.WHITE}Groq Provider:{Color.RESET}   {Color.GREEN if self.provider.enabled else Color.YELLOW}{'ENABLED' if self.provider.enabled else 'SET GROQ_API_KEY'}{Color.RESET}")
             print(f"{Color.CYAN}{Color.BOLD}╚══════════════════╝{Color.RESET}\n")
             return True
 
