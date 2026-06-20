@@ -148,11 +148,17 @@ class StellightEngine:
         dots = [".  ", ".. ", "..."][frame % 3]
         width = 46
         lines = [
-            f"Training{dots}",
-            f"Provider: {stats.get('provider', 'Local seed')}",
-            f"Information accumulated: {stats.get('learned', 0)} / {stats.get('topics', 0)}",
-            f"Errors: {stats.get('errors', 0)}",
+            f"Training{dots}  (Ctrl+C to stop)",
+            f"Provider: {stats.get('provider', 'Groq')}",
+            f"Information accumulated: {stats.get('learned', 0)}",
+            f"Training cycles: {stats.get('topics', 0)}",
+            f"Errors: {stats.get('errors', 0)} / 10",
+            f"Status: {stats.get('status', 'training')}",
         ]
+        if stats.get("last_question"):
+            lines.append(f"Last: {stats['last_question']}")
+        if stats.get("stop_reason") and stats.get("status") == "stopped":
+            lines.append(f"Stopped: {stats['stop_reason']}")
         self.clear_screen()
         self.print_centered("╔" + "═" * width + "╗", Color.MAGENTA, Color.BOLD)
         for line in lines:
@@ -164,13 +170,17 @@ class StellightEngine:
         def progress(stats):
             self._training_box(stats, frame["i"])
             frame["i"] += 1
-        initial = {"provider": "Groq" if self.provider.enabled else "Local seed", "learned": 0, "topics": 0, "errors": 0}
+        initial = {"provider": "Groq", "learned": 0, "topics": 0, "errors": 0, "status": "training"}
         self._training_box(initial)
         stats = run_training_session(self.knowledge, self.provider, progress_callback=progress)
         self.brain.retrain_generator()
         self.session_learn_count += stats.get("learned", 0)
         self._training_box(stats, frame["i"])
-        print(f"\n{Color.GREEN}{Color.BOLD}  ✓ Training complete. Press Enter to chat.{Color.RESET}")
+        if stats.get("stop_reason") == "missing GROQ_API_KEY":
+            print(f"\n{Color.RED}{Color.BOLD}  ✗ Set GROQ_API_KEY before real Groq training.{Color.RESET}")
+        else:
+            print(f"\n{Color.GREEN}{Color.BOLD}  ✓ Training stopped: {stats.get('stop_reason', 'manual stop')}.{Color.RESET}")
+        print(f"{Color.DIM}  Press Enter to chat.{Color.RESET}")
         input()
 
     def boot_sequence(self):

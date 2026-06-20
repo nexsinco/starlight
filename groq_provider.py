@@ -3,6 +3,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from itertools import cycle
 
 DEFAULT_GROQ_MODEL = os.getenv("STARLIGHT_GROQ_MODEL", "llama-3.1-8b-instant")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -14,14 +15,16 @@ For math, show concise steps when helpful.
 If the user gives a tiny fragment, ask one specific follow-up instead of generic filler."""
 
 TRAINING_TOPICS = [
-    ("hello", "Hey! I'm Starlight. I can chat, solve math, remember useful facts, and learn answers you teach me."),
-    ("who are you", "I'm Starlight, a local AI assistant built for chat, learning, memory, and math."),
-    ("what are you", "I'm an AI assistant running locally with optional Groq-powered answers when an API key is configured."),
-    ("who made you", "I was built as the Starlight AI prototype and improved by the developer working on this project."),
-    ("maths", "Sure — send me a math expression or problem, like 'solve 2x+4=10' or 'what is 15% of 80'."),
-    ("mathematics", "I can help with arithmetic, equations, percentages, primes, statistics, derivatives, integrals, and unit conversions."),
-    ("i don't know", "No worries. Tell me the topic, or pick one: chat, math, planning, explaining, or teaching me a new answer."),
-    ("kk", "Got it. What would you like to do next — chat, solve math, or teach me something?"),
+    "friendly greetings and first messages",
+    "assistant identity and creator questions",
+    "what the assistant can do",
+    "short confused replies like idk or i don't know",
+    "math help requests and examples",
+    "learning command examples",
+    "memory command examples",
+    "planning and brainstorming help",
+    "simple science explanations",
+    "safe coding help",
 ]
 
 class GroqProvider:
@@ -64,27 +67,74 @@ class GroqProvider:
         except (KeyError, json.JSONDecodeError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
             return None
 
-    def generate_training_answer(self, question, fallback):
+    def generate_training_pair(self, topic, learned_count):
         prompt = (
-            "Create one high-quality default answer for this local assistant knowledge base. "
-            "Keep it under 45 words, specific, and natural. Question: " + question
+            "Generate exactly one useful training pair for Starlight's local knowledge base. "
+            "Return ONLY valid JSON with keys question and answer. "
+            "The question should be a likely user message; the answer should be natural, specific, under 70 words, and useful. "
+            "Avoid duplicates and improve weak chatbot behavior. "
+            f"Topic: {topic}. Previously learned this run: {learned_count}."
         )
-        return self.chat(prompt) or fallback
+        raw = self.chat(prompt)
+        if not raw:
+            raise RuntimeError("Groq returned no training data")
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise ValueError("Groq response did not contain a JSON object")
+        data = json.loads(raw[start:end + 1])
+        question = str(data.get("question", "")).strip()
+        answer = str(data.get("answer", "")).strip()
+        if not question or not answer:
+            raise ValueError("Groq training JSON missing question or answer")
+        return question, answer
 
 
-def run_training_session(knowledge_engine, provider, progress_callback=None):
-    stats = {"topics": 0, "learned": 0, "errors": 0, "provider": "Groq" if provider.enabled else "Local seed"}
-    for question, fallback in TRAINING_TOPICS:
-        stats["topics"] += 1
-        try:
-            answer = provider.generate_training_answer(question, fallback)
-            existing, conf = knowledge_engine.query_semantic_match(question)
-            if existing is None or conf < 0.98:
-                knowledge_engine.learn(question, answer)
-                stats["learned"] += 1
-        except Exception:
-            stats["errors"] += 1
+def run_training_session(knowledge_engine, provider, progress_callback=None, max_errors=10, max_cycles=None):
+    stats = {
+        "topics": 0,
+        "learned": 0,
+        "errors": 0,
+        "provider": "Groq",
+        "status": "training",
+        "stop_reason": "manual stop",
+    }
+    if not provider.enabled:
+        stats["errors"] = max_errors + 1
+        stats["status"] = "stopped"
+        stats["stop_reason"] = "missing GROQ_API_KEY"
         if progress_callback:
             progress_callback(dict(stats))
-        time.sleep(0.18)
+        return stats
+
+    topic_stream = cycle(TRAINING_TOPICS)
+    try:
+        while stats["errors"] <= max_errors:
+            if max_cycles is not None and stats["topics"] >= max_cycles:
+                stats["status"] = "stopped"
+                stats["stop_reason"] = "cycle limit reached"
+                break
+            topic = next(topic_stream)
+            stats["topics"] += 1
+            try:
+                question, answer = provider.generate_training_pair(topic, stats["learned"])
+                existing, conf = knowledge_engine.query_semantic_match(question)
+                if existing is None or conf < 0.98:
+                    knowledge_engine.learn(question, answer)
+                    stats["learned"] += 1
+                    stats["last_question"] = question[:70]
+                stats["status"] = "training"
+            except Exception as exc:
+                stats["errors"] += 1
+                stats["last_error"] = str(exc)[:70]
+                if stats["errors"] > max_errors:
+                    stats["status"] = "stopped"
+                    stats["stop_reason"] = "more than 10 errors"
+                    break
+            if progress_callback:
+                progress_callback(dict(stats))
+            time.sleep(0.18)
+    except KeyboardInterrupt:
+        stats["status"] = "stopped"
+        stats["stop_reason"] = "manual stop"
     return stats
