@@ -32,6 +32,7 @@ class GroqProvider:
         self.api_key = api_key or os.getenv("GROQ_API_KEY")
         self.model = model or DEFAULT_GROQ_MODEL
         self.timeout = timeout
+        self.last_debug = ""
 
     @property
     def enabled(self):
@@ -64,30 +65,50 @@ class GroqProvider:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 data = json.loads(response.read().decode("utf-8"))
             return data["choices"][0]["message"]["content"].strip()
-        except (KeyError, json.JSONDecodeError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")[:240]
+            self.last_debug = f"HTTP {exc.code}: {body}"
+            return None
+        except urllib.error.URLError as exc:
+            self.last_debug = f"URL error: {exc.reason}"
+            return None
+        except (KeyError, json.JSONDecodeError, TimeoutError) as exc:
+            self.last_debug = f"Response parse error: {exc}"
             return None
 
-    def generate_training_pair(self, topic, learned_count):
+    def generate_training_pairs(self, topic, learned_count, batch_size=3):
         prompt = (
-            "Generate exactly one useful training pair for Starlight's local knowledge base. "
-            "Return ONLY valid JSON with keys question and answer. "
-            "The question should be a likely user message; the answer should be natural, specific, under 70 words, and useful. "
-            "Avoid duplicates and improve weak chatbot behavior. "
+            "Generate a high-quality mini training batch for Starlight's local knowledge base. "
+            "Return ONLY valid JSON in this shape: {\"pairs\":[{\"question\":...,\"answer\":...}]}. "
+            f"Create exactly {batch_size} diverse pairs. Questions must be realistic user messages. "
+            "Answers must be natural, specific, useful, and under 80 words. Include better math explanations, identity answers, and help for vague messages when relevant. "
+            "Avoid duplicates, filler, and generic 'tell me more' replies. "
             f"Topic: {topic}. Previously learned this run: {learned_count}."
         )
         raw = self.chat(prompt)
         if not raw:
-            raise RuntimeError("Groq returned no training data")
+            raise RuntimeError(self.last_debug or "Groq returned no training data")
         start = raw.find("{")
         end = raw.rfind("}")
         if start == -1 or end == -1 or end <= start:
+            self.last_debug = raw[:240]
             raise ValueError("Groq response did not contain a JSON object")
         data = json.loads(raw[start:end + 1])
-        question = str(data.get("question", "")).strip()
-        answer = str(data.get("answer", "")).strip()
-        if not question or not answer:
-            raise ValueError("Groq training JSON missing question or answer")
-        return question, answer
+        pairs = data.get("pairs")
+        if not isinstance(pairs, list):
+            pairs = [data]
+        cleaned = []
+        for item in pairs:
+            question = str(item.get("question", "")).strip() if isinstance(item, dict) else ""
+            answer = str(item.get("answer", "")).strip() if isinstance(item, dict) else ""
+            if question and answer:
+                cleaned.append((question, answer))
+        if not cleaned:
+            raise ValueError("Groq training JSON missing usable question/answer pairs")
+        return cleaned
+
+    def generate_training_pair(self, topic, learned_count):
+        return self.generate_training_pairs(topic, learned_count, batch_size=1)[0]
 
 
 def run_training_session(knowledge_engine, provider, progress_callback=None, max_errors=10, max_cycles=None):
@@ -117,16 +138,26 @@ def run_training_session(knowledge_engine, provider, progress_callback=None, max
             topic = next(topic_stream)
             stats["topics"] += 1
             try:
-                question, answer = provider.generate_training_pair(topic, stats["learned"])
-                existing, conf = knowledge_engine.query_semantic_match(question)
-                if existing is None or conf < 0.98:
-                    knowledge_engine.learn(question, answer)
-                    stats["learned"] += 1
-                    stats["last_question"] = question[:70]
+                if hasattr(provider, "generate_training_pairs"):
+                    pairs = provider.generate_training_pairs(topic, stats["learned"], batch_size=3)
+                else:
+                    pairs = [provider.generate_training_pair(topic, stats["learned"])]
+                new_items = 0
+                for question, answer in pairs:
+                    existing, conf = knowledge_engine.query_semantic_match(question)
+                    if existing is None or conf < 0.98:
+                        knowledge_engine.learn(question, answer)
+                        stats["learned"] += 1
+                        new_items += 1
+                        stats["last_question"] = question[:70]
+                stats["last_batch"] = len(pairs)
+                stats["last_new"] = new_items
                 stats["status"] = "training"
+                stats["debug"] = f"topic={topic}; batch={len(pairs)}; new={new_items}"
             except Exception as exc:
                 stats["errors"] += 1
-                stats["last_error"] = str(exc)[:70]
+                stats["last_error"] = str(exc)[:120]
+                stats["debug"] = getattr(provider, "last_debug", "") or type(exc).__name__
                 if stats["errors"] > max_errors:
                     stats["status"] = "stopped"
                     stats["stop_reason"] = "more than 10 errors"

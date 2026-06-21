@@ -534,10 +534,13 @@ class AdvancedMathEngine:
     def _normalize_math_language(text: str) -> str:
         replacements = [
             (r"\bwhats\b", "what is"),
-            (r"\bplus\b", "+"),
-            (r"\bminus\b", "-"),
+            (r"\bplus\b|\badded to\b", "+"),
+            (r"\bminus\b|\bsubtract(?:ed)?\b", "-"),
             (r"\btimes\b|\bmultiplied by\b", "*"),
             (r"\bdivided by\b|\bover\b", "/"),
+            (r"\bhalf of\b", "0.5 *"),
+            (r"\bdouble\b", "2 *"),
+            (r"\btriple\b", "3 *"),
             (r"\bto the power of\b|\bto the power\b|\bpower of\b", "^"),
             (r"\bsquared\b", "^2"),
             (r"\bcubed\b", "^3"),
@@ -555,12 +558,47 @@ class AdvancedMathEngine:
             r'value of|work out|figure out)\s+', '', t, flags=re.I
         )
 
+        # Natural-language arithmetic shortcuts
+        m = re.search(r'(?:sum|total)\s+of\s+(-?\d+(?:\.\d+)?)\s+(?:and|,)\s+(-?\d+(?:\.\d+)?)', t)
+        if m:
+            a, b = float(m.group(1)), float(m.group(2))
+            return cls._fmt_steps("Sum solver", ["Identify the two addends: %s and %s." % (cls._fmt(a), cls._fmt(b)), "Add them together."], cls._fmt(a + b)), 1.0
+
+        m = re.search(r'(?:difference)\s+(?:between|of)\s+(-?\d+(?:\.\d+)?)\s+(?:and|,)\s+(-?\d+(?:\.\d+)?)', t)
+        if m:
+            a, b = float(m.group(1)), float(m.group(2))
+            return cls._fmt_steps("Difference solver", ["Identify the two numbers: %s and %s." % (cls._fmt(a), cls._fmt(b)), "Subtract the smaller from the larger for the distance between them."], cls._fmt(abs(a - b))), 1.0
+
+        m = re.search(r'(?:product)\s+of\s+(-?\d+(?:\.\d+)?)\s+(?:and|,)\s+(-?\d+(?:\.\d+)?)', t)
+        if m:
+            a, b = float(m.group(1)), float(m.group(2))
+            return cls._fmt_steps("Product solver", ["Identify the factors: %s and %s." % (cls._fmt(a), cls._fmt(b)), "Multiply the factors."], cls._fmt(a * b)), 1.0
+
+        m = re.search(r'(-?\d+(?:\.\d+)?)\s+(?:more than|greater than)\s+(-?\d+(?:\.\d+)?)', t)
+        if m:
+            a, b = float(m.group(1)), float(m.group(2))
+            return cls._fmt_steps("More-than solver", ["'%s more than %s' means %s + %s." % (cls._fmt(a), cls._fmt(b), cls._fmt(b), cls._fmt(a))], cls._fmt(b + a)), 1.0
+
+        m = re.search(r'(-?\d+(?:\.\d+)?)\s+(?:less than|fewer than)\s+(-?\d+(?:\.\d+)?)', t)
+        if m:
+            a, b = float(m.group(1)), float(m.group(2))
+            return cls._fmt_steps("Less-than solver", ["'%s less than %s' means %s - %s." % (cls._fmt(a), cls._fmt(b), cls._fmt(b), cls._fmt(a))], cls._fmt(b - a)), 1.0
+
         # Percentages
         m = re.search(r'(?:what\s+is\s+)?([\d.]+)\s*%\s+of\s+([\d.]+)', t)
         if m:
             pct, whole = float(m.group(1)), float(m.group(2))
             result = whole * pct / 100
             return cls._fmt_steps("Percentage solver", ["Convert %s%% to decimal: %s/100 = %s." % (cls._fmt(pct), cls._fmt(pct), cls._fmt(pct / 100)), "Multiply by the whole: %s × %s." % (cls._fmt(whole), cls._fmt(pct / 100))], cls._fmt(result)), 1.0
+
+        m = re.search(r'(?:increase|decrease)\s+(-?\d+(?:\.\d+)?)\s+by\s+([\d.]+)\s*%', t)
+        if m:
+            base, pct = float(m.group(1)), float(m.group(2))
+            sign = 1 if 'increase' in t else -1
+            change = base * pct / 100
+            result = base + sign * change
+            action = "increase" if sign == 1 else "decrease"
+            return cls._fmt_steps("Percentage %s solver" % action, ["Find %s%% of %s = %s." % (cls._fmt(pct), cls._fmt(base), cls._fmt(change)), "%s the original by that amount." % action.capitalize()], cls._fmt(result)), 1.0
 
         # Fibonacci
         m = re.search(r'fibonacci(?:\s+sequence)?\s+(?:of\s+|for\s+)?(\d+)', t)

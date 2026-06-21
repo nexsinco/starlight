@@ -157,6 +157,10 @@ class StellightEngine:
         ]
         if stats.get("last_question"):
             lines.append(f"Last: {stats['last_question']}")
+        if stats.get("last_error"):
+            lines.append(f"Error: {stats['last_error']}")
+        if stats.get("debug"):
+            lines.append(f"Debug: {stats['debug']}")
         if stats.get("stop_reason") and stats.get("status") == "stopped":
             lines.append(f"Stopped: {stats['stop_reason']}")
         self.clear_screen()
