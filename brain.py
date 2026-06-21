@@ -9,6 +9,7 @@
 import re
 import math
 import random
+from groq_provider import GroqProvider
 from collections import defaultdict, Counter
 
 
@@ -533,10 +534,13 @@ class AdvancedMathEngine:
     def _normalize_math_language(text: str) -> str:
         replacements = [
             (r"\bwhats\b", "what is"),
-            (r"\bplus\b", "+"),
-            (r"\bminus\b", "-"),
+            (r"\bplus\b|\badded to\b", "+"),
+            (r"\bminus\b|\bsubtract(?:ed)?\b", "-"),
             (r"\btimes\b|\bmultiplied by\b", "*"),
             (r"\bdivided by\b|\bover\b", "/"),
+            (r"\bhalf of\b", "0.5 *"),
+            (r"\bdouble\b", "2 *"),
+            (r"\btriple\b", "3 *"),
             (r"\bto the power of\b|\bto the power\b|\bpower of\b", "^"),
             (r"\bsquared\b", "^2"),
             (r"\bcubed\b", "^3"),
@@ -554,12 +558,47 @@ class AdvancedMathEngine:
             r'value of|work out|figure out)\s+', '', t, flags=re.I
         )
 
+        # Natural-language arithmetic shortcuts
+        m = re.search(r'(?:sum|total)\s+of\s+(-?\d+(?:\.\d+)?)\s+(?:and|,)\s+(-?\d+(?:\.\d+)?)', t)
+        if m:
+            a, b = float(m.group(1)), float(m.group(2))
+            return cls._fmt_steps("Sum solver", ["Identify the two addends: %s and %s." % (cls._fmt(a), cls._fmt(b)), "Add them together."], cls._fmt(a + b)), 1.0
+
+        m = re.search(r'(?:difference)\s+(?:between|of)\s+(-?\d+(?:\.\d+)?)\s+(?:and|,)\s+(-?\d+(?:\.\d+)?)', t)
+        if m:
+            a, b = float(m.group(1)), float(m.group(2))
+            return cls._fmt_steps("Difference solver", ["Identify the two numbers: %s and %s." % (cls._fmt(a), cls._fmt(b)), "Subtract the smaller from the larger for the distance between them."], cls._fmt(abs(a - b))), 1.0
+
+        m = re.search(r'(?:product)\s+of\s+(-?\d+(?:\.\d+)?)\s+(?:and|,)\s+(-?\d+(?:\.\d+)?)', t)
+        if m:
+            a, b = float(m.group(1)), float(m.group(2))
+            return cls._fmt_steps("Product solver", ["Identify the factors: %s and %s." % (cls._fmt(a), cls._fmt(b)), "Multiply the factors."], cls._fmt(a * b)), 1.0
+
+        m = re.search(r'(-?\d+(?:\.\d+)?)\s+(?:more than|greater than)\s+(-?\d+(?:\.\d+)?)', t)
+        if m:
+            a, b = float(m.group(1)), float(m.group(2))
+            return cls._fmt_steps("More-than solver", ["'%s more than %s' means %s + %s." % (cls._fmt(a), cls._fmt(b), cls._fmt(b), cls._fmt(a))], cls._fmt(b + a)), 1.0
+
+        m = re.search(r'(-?\d+(?:\.\d+)?)\s+(?:less than|fewer than)\s+(-?\d+(?:\.\d+)?)', t)
+        if m:
+            a, b = float(m.group(1)), float(m.group(2))
+            return cls._fmt_steps("Less-than solver", ["'%s less than %s' means %s - %s." % (cls._fmt(a), cls._fmt(b), cls._fmt(b), cls._fmt(a))], cls._fmt(b - a)), 1.0
+
         # Percentages
         m = re.search(r'(?:what\s+is\s+)?([\d.]+)\s*%\s+of\s+([\d.]+)', t)
         if m:
             pct, whole = float(m.group(1)), float(m.group(2))
             result = whole * pct / 100
             return cls._fmt_steps("Percentage solver", ["Convert %s%% to decimal: %s/100 = %s." % (cls._fmt(pct), cls._fmt(pct), cls._fmt(pct / 100)), "Multiply by the whole: %s × %s." % (cls._fmt(whole), cls._fmt(pct / 100))], cls._fmt(result)), 1.0
+
+        m = re.search(r'(?:increase|decrease)\s+(-?\d+(?:\.\d+)?)\s+by\s+([\d.]+)\s*%', t)
+        if m:
+            base, pct = float(m.group(1)), float(m.group(2))
+            sign = 1 if 'increase' in t else -1
+            change = base * pct / 100
+            result = base + sign * change
+            action = "increase" if sign == 1 else "decrease"
+            return cls._fmt_steps("Percentage %s solver" % action, ["Find %s%% of %s = %s." % (cls._fmt(pct), cls._fmt(base), cls._fmt(change)), "%s the original by that amount." % action.capitalize()], cls._fmt(result)), 1.0
 
         # Fibonacci
         m = re.search(r'fibonacci(?:\s+sequence)?\s+(?:of\s+|for\s+)?(\d+)', t)
@@ -685,11 +724,10 @@ class AdvancedMathEngine:
 class SentenceGenerator:
 
     FALLBACKS = [
-        "I can chat about that, but I need a little more detail. What angle do you want to explore?",
-        "I’m not fully sure yet, but I can help reason it out. Tell me one more detail and I’ll try a smarter answer.",
-        "Got it. I can keep learning from this conversation — ask it another way or teach me with: learn question | answer.",
-        "I’m still building knowledge there, but I can help brainstorm, simplify, or make a plan.",
-        "Interesting — give me a bit more context and I’ll connect it to what I already know.",
+        "I need one more detail so I can answer well. Tell me the topic or ask a full question.",
+        "I can help with chat, math, planning, explanations, or saved learning. What should we do?",
+        "If you want to teach me a permanent answer, use: learn question | answer",
+        "Give me a little context and I’ll turn it into a useful answer instead of guessing.",
     ]
 
     GREETING_RESPONSES = [
@@ -773,7 +811,7 @@ class IntentClassifier:
         'recall':      r"(what is|what's) my\s+\w+",
         'remember':    r'^remember my\s+.+\s+is\s+.+',
         'question':    r'\?$|^(what|who|where|when|why|how|which|whose|whom)',
-        'small_talk':  r'^(how are you|how\'s it going|what\'s up|are you|do you|can you|i\'m doing|i am doing|doing fine|doing good|doing well)',
+        'small_talk':  r'^(how are you|how\'s it going|what\'s up|are you|who are you|what are you|who made you|who created you|who built you|do you|can you|i\'m doing|i am doing|doing fine|doing good|doing well)',
     }
 
     COMPILED = {intent: re.compile(pat, re.IGNORECASE)
@@ -789,9 +827,9 @@ class IntentClassifier:
             "Nice — glad to hear it! Want to chat, learn something, or solve a problem?",
             "Awesome. I'm here for chatting, quick learning, or math whenever you're ready.",
         ],
-        r'are you (human|a robot|an ai|real)': [
-            "I'm an AI — but a pretty smart one! Ask me anything.",
-            "AI through and through. What do you need?",
+        r'(are you|what are you|who are you)\??$|are you (human|a robot|an ai|real)': [
+            "I'm Starlight, a local AI assistant for chat, learning, memory, and math. If Groq is configured, I can use it for stronger open-ended answers too.",
+            "I'm Starlight — a local assistant that can solve math, remember facts you save, learn Q&A pairs, and optionally call Groq for smarter replies.",
         ],
         r'what can you do': [
             "I can solve complex math, answer questions, learn new things, "
@@ -875,6 +913,7 @@ class DecisionBrain:
         self.generator = SentenceGenerator()
         self.intent    = IntentClassifier()
         self.context   = ContextManager()
+        self.provider  = GroqProvider()
         self.HIGH_CONF = 0.85
         self.LOW_CONF  = 0.50
         self._sync_generator()
@@ -982,15 +1021,30 @@ class DecisionBrain:
             self.context.add_turn(msg, answer)
             return answer, confidence
 
-        # Low confidence — try Markov generation
+        # Short topic nudges before provider/fallback.
+        if msg_lower in {'math', 'maths', 'mathematics'}:
+            resp = "Send me a math problem and I’ll solve it. Examples: 2+2, solve 2x+4=10, 15% of 80, or derivative of x^2."
+            self.context.add_turn(msg, resp)
+            return resp, 0.95
+
+        # Provider fallback — use Groq for open-ended prompts when configured.
+        provider_answer = self.provider.chat(msg, history=self.memory.storage.get('history', []))
+        if provider_answer:
+            self.context.add_turn(msg, provider_answer)
+            return provider_answer, 0.92
+
+        # Low confidence — try Markov generation only when real training text exists.
         seed_words = [w for w in msg_lower.split()
                       if len(w) > 3 and w not in {'what', 'does', 'this', 'that', 'with'}]
         generated = self.generator.generate(seed_words=seed_words)
-        if generated and "interesting question" not in generated:
+        if self.generator.trained and generated and generated not in self.generator.FALLBACKS:
             self.context.add_turn(msg, generated)
             return generated, 0.3
 
-        # Full fallback: give a useful conversational answer instead of forcing teaching.
-        fallback = self.generator.fallback()
+        # Full fallback: give a useful, specific next step instead of random filler.
+        if intent == 'question':
+            fallback = "I don't have enough local knowledge for that yet. If you want, teach me with: learn %s | [answer]" % msg
+        else:
+            fallback = self.generator.fallback()
         self.context.add_turn(msg, fallback)
         return fallback, 0.55
